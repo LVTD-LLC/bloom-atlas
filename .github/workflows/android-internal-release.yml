@@ -1,0 +1,57 @@
+name: Android Internal Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      auto_submit:
+        description: "Submit the production AAB to Google Play internal testing after build"
+        type: boolean
+        default: true
+      no_wait:
+        description: "Do not wait for the EAS build/submit job to finish"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-internal-release
+  cancel-in-progress: false
+
+jobs:
+  android-internal-release:
+    name: Build Android AAB for internal testing
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify EAS project link
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: npm run eas:project -- --non-interactive
+
+      - name: Build production AAB and optionally submit to Play internal testing
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EAS_BUILD_NO_EXPO_GO_WARNING: "true"
+        run: |
+          set -euo pipefail
+          cmd=(npm run build:android:play -- --non-interactive)
+          if [ "${{ inputs.auto_submit }}" = "true" ]; then
+            cmd+=(--auto-submit)
+          fi
+          if [ "${{ inputs.no_wait }}" = "true" ]; then
+            cmd+=(--no-wait)
+          fi
+          "${cmd[@]}"

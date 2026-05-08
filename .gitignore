@@ -29,6 +29,10 @@ yarn-error.*
 # macOS
 .DS_Store
 *.pem
+*.json.key
+play-service-account*.json
+google-service-account*.json
+service-account*.json
 
 # local env files
 .env*.local
