@@ -8,7 +8,12 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "typecheck": "tsc --noEmit",
-    "doctor": "npx expo-doctor"
+    "doctor": "npx expo-doctor",
+    "eas:project": "npx eas-cli project:info",
+    "build:android:preview": "npx eas-cli build --platform android --profile preview",
+    "build:android:play": "npx eas-cli build --platform android --profile production",
+    "submit:android:internal": "npx eas-cli submit --platform android --profile production --latest",
+    "release:android:internal": "npx eas-cli build --platform android --profile production --auto-submit"
   },
   "dependencies": {
     "expo": "~54.0.33",
