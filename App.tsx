@@ -1,25 +1,28 @@
 import { StatusBar } from 'expo-status-bar';
 import { useMemo, useState } from 'react';
 import {
+  Modal,
   Pressable,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
+import MapView, { Marker, UrlTile } from 'react-native-maps';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
 import { BloomEvent, BloomMonth, bloomEvents, monthOrder } from './src/data/blooms';
 
 type Tab = 'map' | 'calendar' | 'saved';
 
-const worldMapWidth = 320;
-const worldMapHeight = 180;
+const osmTileUrl = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
 
-function markerPosition(event: BloomEvent) {
+function regionForEvent(event: BloomEvent, latitudeDelta = 45, longitudeDelta = 70) {
   return {
-    left: ((event.longitude + 180) / 360) * worldMapWidth,
-    top: ((90 - event.latitude) / 180) * worldMapHeight,
+    latitude: event.latitude,
+    longitude: event.longitude,
+    latitudeDelta,
+    longitudeDelta,
   };
 }
 
@@ -41,7 +44,8 @@ export default function App() {
   const countriesCount = new Set(bloomEvents.map((event) => event.country)).size;
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaProvider>
+      <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
       <StatusBar style="dark" />
       <View style={styles.appShell}>
         <View style={styles.header}>
@@ -89,7 +93,8 @@ export default function App() {
           {activeTab === 'saved' ? <SavedTab /> : null}
         </ScrollView>
       </View>
-    </SafeAreaView>
+      </SafeAreaView>
+    </SafeAreaProvider>
   );
 }
 
@@ -106,6 +111,8 @@ function MapTab({
   onSelectEvent: (id: string) => void;
   onSelectMonth: (month: BloomMonth | 'All') => void;
 }) {
+  const [mapExpanded, setMapExpanded] = useState(false);
+
   return (
     <View>
       <MonthFilter selectedMonth={selectedMonth} onSelectMonth={onSelectMonth} />
@@ -113,34 +120,26 @@ function MapTab({
       <View style={styles.mapCard}>
         <View style={styles.mapHeader}>
           <Text style={styles.sectionTitle}>Bloom map</Text>
-          <Text style={styles.mutedText}>{events.length} matching places</Text>
+          <Pressable accessibilityRole="button" onPress={() => setMapExpanded(true)} style={styles.mapActionButton}>
+            <Text style={styles.mapActionText}>Full screen</Text>
+          </Pressable>
         </View>
-        <View style={styles.mapCanvas}>
-          <View style={[styles.continent, styles.americas]} />
-          <View style={[styles.continent, styles.europeAfrica]} />
-          <View style={[styles.continent, styles.asia]} />
-          <View style={[styles.continent, styles.australia]} />
-          {events.map((event) => {
-            const position = markerPosition(event);
-            const selected = event.id === selectedEvent.id;
-            return (
-              <Pressable
-                key={event.id}
-                accessibilityRole="button"
-                accessibilityLabel={`${event.commonName} in ${event.locationName}`}
-                onPress={() => onSelectEvent(event.id)}
-                style={[
-                  styles.mapMarker,
-                  { left: position.left - 12, top: position.top - 12 },
-                  selected ? styles.mapMarkerSelected : null,
-                ]}
-              >
-                <Text style={styles.mapMarkerText}>{event.imageEmoji}</Text>
-              </Pressable>
-            );
-          })}
-        </View>
+        <BloomMap
+          events={events}
+          selectedEvent={selectedEvent}
+          onSelectEvent={onSelectEvent}
+          compact
+        />
+        <Text style={styles.mapCaption}>{events.length} matching places · OpenStreetMap tiles</Text>
       </View>
+
+      <FullScreenMap
+        events={events}
+        selectedEvent={selectedEvent}
+        visible={mapExpanded}
+        onClose={() => setMapExpanded(false)}
+        onSelectEvent={onSelectEvent}
+      />
 
       <BloomDetail event={selectedEvent} />
 
@@ -154,6 +153,80 @@ function MapTab({
         />
       ))}
     </View>
+  );
+}
+
+function BloomMap({
+  events,
+  selectedEvent,
+  onSelectEvent,
+  compact,
+}: {
+  events: BloomEvent[];
+  selectedEvent: BloomEvent;
+  onSelectEvent: (id: string) => void;
+  compact?: boolean;
+}) {
+  return (
+    <MapView
+      style={compact ? styles.mapCanvas : styles.fullMap}
+      initialRegion={regionForEvent(selectedEvent)}
+      region={regionForEvent(selectedEvent)}
+      mapType="none"
+      rotateEnabled={!compact}
+      pitchEnabled={!compact}
+      showsCompass={!compact}
+      toolbarEnabled={false}
+    >
+      <UrlTile urlTemplate={osmTileUrl} maximumZ={19} flipY={false} />
+      {events.map((event) => {
+        const selected = event.id === selectedEvent.id;
+        return (
+          <Marker
+            key={event.id}
+            coordinate={{ latitude: event.latitude, longitude: event.longitude }}
+            title={event.commonName}
+            description={event.locationName}
+            onPress={() => onSelectEvent(event.id)}
+          >
+            <View style={[styles.mapMarker, selected ? styles.mapMarkerSelected : null]}>
+              <Text style={styles.mapMarkerText}>{event.imageEmoji}</Text>
+            </View>
+          </Marker>
+        );
+      })}
+    </MapView>
+  );
+}
+
+function FullScreenMap({
+  events,
+  selectedEvent,
+  visible,
+  onClose,
+  onSelectEvent,
+}: {
+  events: BloomEvent[];
+  selectedEvent: BloomEvent;
+  visible: boolean;
+  onClose: () => void;
+  onSelectEvent: (id: string) => void;
+}) {
+  return (
+    <Modal animationType="slide" visible={visible} onRequestClose={onClose}>
+      <SafeAreaView style={styles.fullMapShell} edges={['top', 'bottom']}>
+        <View style={styles.fullMapHeader}>
+          <View>
+            <Text style={styles.eyebrow}>Bloom map</Text>
+            <Text style={styles.fullMapTitle}>{selectedEvent.locationName}</Text>
+          </View>
+          <Pressable accessibilityRole="button" onPress={onClose} style={styles.closeButton}>
+            <Text style={styles.closeButtonText}>Close</Text>
+          </Pressable>
+        </View>
+        <BloomMap events={events} selectedEvent={selectedEvent} onSelectEvent={onSelectEvent} />
+      </SafeAreaView>
+    </Modal>
   );
 }
 
@@ -401,6 +474,53 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     marginBottom: 10,
   },
+  mapActionButton: {
+    backgroundColor: colors.ink,
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  mapActionText: {
+    color: colors.card,
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  mapCaption: {
+    color: colors.muted,
+    fontSize: 12,
+    marginTop: 10,
+  },
+  fullMapShell: {
+    backgroundColor: colors.background,
+    flex: 1,
+  },
+  fullMapHeader: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    padding: 16,
+  },
+  fullMapTitle: {
+    color: colors.ink,
+    fontSize: 18,
+    fontWeight: '800',
+    maxWidth: 240,
+  },
+  closeButton: {
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+  },
+  closeButtonText: {
+    color: colors.ink,
+    fontWeight: '800',
+  },
+  fullMap: {
+    flex: 1,
+  },
   sectionTitle: {
     color: colors.ink,
     fontSize: 19,
@@ -412,50 +532,11 @@ const styles = StyleSheet.create({
     lineHeight: 19,
   },
   mapCanvas: {
-    alignSelf: 'center',
     backgroundColor: colors.sky,
     borderRadius: 22,
-    height: worldMapHeight,
+    height: 230,
     overflow: 'hidden',
-    position: 'relative',
-    width: worldMapWidth,
-  },
-  continent: {
-    backgroundColor: '#BBD8AA',
-    opacity: 0.8,
-    position: 'absolute',
-  },
-  americas: {
-    borderRadius: 50,
-    height: 118,
-    left: 28,
-    top: 30,
-    transform: [{ rotate: '-18deg' }],
-    width: 70,
-  },
-  europeAfrica: {
-    borderRadius: 48,
-    height: 126,
-    left: 142,
-    top: 24,
-    transform: [{ rotate: '8deg' }],
-    width: 58,
-  },
-  asia: {
-    borderRadius: 60,
-    height: 98,
-    left: 190,
-    top: 22,
-    transform: [{ rotate: '-8deg' }],
-    width: 98,
-  },
-  australia: {
-    borderRadius: 28,
-    height: 28,
-    left: 244,
-    top: 126,
-    transform: [{ rotate: '10deg' }],
-    width: 48,
+    width: '100%',
   },
   mapMarker: {
     alignItems: 'center',
@@ -465,7 +546,6 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     height: 28,
     justifyContent: 'center',
-    position: 'absolute',
     width: 28,
   },
   mapMarkerSelected: {
