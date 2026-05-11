@@ -1,6 +1,8 @@
+import * as Location from 'expo-location';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Modal,
   Pressable,
   ScrollView,
@@ -14,10 +16,47 @@ import type { WebViewMessageEvent } from 'react-native-webview';
 
 import { BloomEvent, BloomMonth, bloomEvents, monthOrder } from './src/data/blooms';
 
-type Tab = 'map' | 'calendar' | 'saved';
+type Tab = 'map' | 'near' | 'calendar' | 'saved';
+
+type UserLocation = {
+  latitude: number;
+  longitude: number;
+};
+
+type NearbyBloom = BloomEvent & {
+  distanceKm: number;
+  isInSeason: boolean;
+};
 
 function monthMatches(event: BloomEvent, month: BloomMonth | 'All') {
   return month === 'All' || event.bestMonths.includes(month);
+}
+
+function getCurrentBloomMonth(date = new Date()): BloomMonth {
+  return monthOrder[date.getMonth()];
+}
+
+function distanceKmBetween(from: UserLocation, event: BloomEvent) {
+  const earthRadiusKm = 6371;
+  const toRadians = (value: number) => (value * Math.PI) / 180;
+  const latDelta = toRadians(event.latitude - from.latitude);
+  const lonDelta = toRadians(event.longitude - from.longitude);
+  const fromLat = toRadians(from.latitude);
+  const toLat = toRadians(event.latitude);
+
+  const haversine =
+    Math.sin(latDelta / 2) ** 2 +
+    Math.cos(fromLat) * Math.cos(toLat) * Math.sin(lonDelta / 2) ** 2;
+
+  return earthRadiusKm * 2 * Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine));
+}
+
+function formatDistance(distanceKm: number) {
+  if (distanceKm < 10) {
+    return `${distanceKm.toFixed(1)} km away`;
+  }
+
+  return `${Math.round(distanceKm).toLocaleString()} km away`;
 }
 
 export default function App() {
@@ -54,6 +93,7 @@ export default function App() {
 
         <View style={styles.tabs}>
           <TabButton label="Map" active={activeTab === 'map'} onPress={() => setActiveTab('map')} />
+          <TabButton label="Near me" active={activeTab === 'near'} onPress={() => setActiveTab('near')} />
           <TabButton label="Calendar" active={activeTab === 'calendar'} onPress={() => setActiveTab('calendar')} />
           <TabButton label="Saved" active={activeTab === 'saved'} onPress={() => setActiveTab('saved')} />
         </View>
@@ -66,6 +106,15 @@ export default function App() {
               selectedMonth={selectedMonth}
               onSelectEvent={setSelectedEventId}
               onSelectMonth={setSelectedMonth}
+            />
+          ) : null}
+
+          {activeTab === 'near' ? (
+            <NearMeTab
+              onSelectEvent={(id) => {
+                setSelectedEventId(id);
+                setActiveTab('map');
+              }}
             />
           ) : null}
 
@@ -479,6 +528,127 @@ function FullScreenMap({
   );
 }
 
+function NearMeTab({ onSelectEvent }: { onSelectEvent: (id: string) => void }) {
+  const currentMonth = getCurrentBloomMonth();
+  const [location, setLocation] = useState<UserLocation | null>(null);
+  const [locationStatus, setLocationStatus] = useState<'idle' | 'loading' | 'ready' | 'denied' | 'error'>('idle');
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  const nearbyBlooms = useMemo<NearbyBloom[]>(() => {
+    if (!location) {
+      return [];
+    }
+
+    return bloomEvents
+      .map((event) => ({
+        ...event,
+        distanceKm: distanceKmBetween(location, event),
+        isInSeason: event.bestMonths.includes(currentMonth),
+      }))
+      .sort((left, right) => {
+        if (left.isInSeason !== right.isInSeason) {
+          return left.isInSeason ? -1 : 1;
+        }
+
+        return left.distanceKm - right.distanceKm;
+      });
+  }, [currentMonth, location]);
+
+  const inSeasonBlooms = nearbyBlooms.filter((event) => event.isInSeason);
+  const fallbackBlooms = nearbyBlooms.filter((event) => !event.isInSeason).slice(0, 5);
+
+  async function findNearbyBlooms() {
+    setLocationStatus('loading');
+    setErrorMessage(null);
+
+    try {
+      const permission = await Location.requestForegroundPermissionsAsync();
+
+      if (permission.status !== Location.PermissionStatus.GRANTED) {
+        setLocationStatus('denied');
+        return;
+      }
+
+      const position = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+
+      setLocation({
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude,
+      });
+      setLocationStatus('ready');
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Could not read your current location.');
+      setLocationStatus('error');
+    }
+  }
+
+  return (
+    <View>
+      <View style={styles.nearHeroCard}>
+        <Text style={styles.eyebrow}>Near me right now</Text>
+        <Text style={styles.nearHeroTitle}>Find seasonal bloom trips closest to your current location.</Text>
+        <Text style={styles.mutedText}>
+          Uses your device location once, then ranks the seed catalog by distance and highlights blooms that are in season in {currentMonth}.
+        </Text>
+        <Pressable
+          accessibilityRole="button"
+          disabled={locationStatus === 'loading'}
+          onPress={findNearbyBlooms}
+          style={[styles.primaryButton, locationStatus === 'loading' ? styles.primaryButtonDisabled : null]}
+        >
+          {locationStatus === 'loading' ? (
+            <ActivityIndicator color={colors.card} />
+          ) : (
+            <Text style={styles.primaryButtonText}>{location ? 'Refresh my location' : 'Use my location'}</Text>
+          )}
+        </Pressable>
+      </View>
+
+      {locationStatus === 'denied' ? (
+        <View style={styles.infoCard}>
+          <Text style={styles.sectionTitle}>Location permission needed</Text>
+          <Text style={styles.mutedText}>
+            Enable location access for Bloom Atlas in system settings, then come back and try again.
+          </Text>
+        </View>
+      ) : null}
+
+      {locationStatus === 'error' ? (
+        <View style={styles.infoCard}>
+          <Text style={styles.sectionTitle}>Could not get location</Text>
+          <Text style={styles.mutedText}>{errorMessage}</Text>
+        </View>
+      ) : null}
+
+      {location ? (
+        <View style={styles.infoCard}>
+          <Text style={styles.sectionTitle}>{inSeasonBlooms.length ? 'In season near you' : `No ${currentMonth} blooms in the seed catalog`}</Text>
+          <Text style={styles.mutedText}>
+            {inSeasonBlooms.length
+              ? `Showing ${inSeasonBlooms.length} bloom ${inSeasonBlooms.length === 1 ? 'place' : 'places'} active this month, nearest first.`
+              : 'Showing the nearest seeded bloom destinations instead, so you still have useful places to explore.'}
+          </Text>
+        </View>
+      ) : null}
+
+      {inSeasonBlooms.map((event) => (
+        <NearbyBloomRow key={event.id} event={event} onPress={() => onSelectEvent(event.id)} />
+      ))}
+
+      {location && fallbackBlooms.length ? (
+        <View style={styles.nearFallbackSection}>
+          <Text style={styles.sectionTitle}>Nearest out-of-season blooms</Text>
+          {fallbackBlooms.map((event) => (
+            <NearbyBloomRow key={event.id} event={event} onPress={() => onSelectEvent(event.id)} />
+          ))}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 function CalendarTab({
   selectedMonth,
   onSelectMonth,
@@ -568,6 +738,22 @@ function BloomRow({ event, selected, onPress }: { event: BloomEvent; selected?: 
         <Text style={styles.rowTitle}>{event.commonName} · {event.country}</Text>
         <Text style={styles.rowSubtitle}>{event.locationName}</Text>
         <Text style={styles.rowSeason}>{event.seasonLabel}</Text>
+      </View>
+    </Pressable>
+  );
+}
+
+function NearbyBloomRow({ event, onPress }: { event: NearbyBloom; onPress: () => void }) {
+  return (
+    <Pressable onPress={onPress} style={[styles.bloomRow, event.isInSeason ? styles.nearbyBloomInSeason : null]}>
+      <Text style={styles.rowEmoji}>{event.imageEmoji}</Text>
+      <View style={styles.rowBody}>
+        <View style={styles.nearRowHeader}>
+          <Text style={styles.rowTitle}>{event.commonName} · {event.country}</Text>
+          <Text style={styles.distanceBadge}>{formatDistance(event.distanceKm)}</Text>
+        </View>
+        <Text style={styles.rowSubtitle}>{event.locationName}</Text>
+        <Text style={styles.rowSeason}>{event.isInSeason ? `Now · ${event.seasonLabel}` : event.seasonLabel}</Text>
       </View>
     </Pressable>
   );
@@ -685,6 +871,69 @@ const styles = StyleSheet.create({
   },
   content: {
     paddingBottom: 36,
+  },
+  nearHeroCard: {
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: 24,
+    borderWidth: 1,
+    gap: 10,
+    marginBottom: 14,
+    padding: 18,
+  },
+  nearHeroTitle: {
+    color: colors.ink,
+    fontSize: 22,
+    fontWeight: '800',
+    lineHeight: 27,
+  },
+  primaryButton: {
+    alignItems: 'center',
+    backgroundColor: colors.ink,
+    borderRadius: 999,
+    marginTop: 4,
+    minHeight: 46,
+    justifyContent: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  primaryButtonDisabled: {
+    opacity: 0.72,
+  },
+  primaryButtonText: {
+    color: colors.card,
+    fontWeight: '800',
+  },
+  infoCard: {
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: 20,
+    borderWidth: 1,
+    gap: 6,
+    marginBottom: 12,
+    padding: 14,
+  },
+  nearFallbackSection: {
+    marginTop: 18,
+  },
+  nearbyBloomInSeason: {
+    borderColor: colors.leaf,
+    borderWidth: 2,
+  },
+  nearRowHeader: {
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  distanceBadge: {
+    alignSelf: 'flex-start',
+    backgroundColor: colors.blush,
+    borderRadius: 999,
+    color: colors.ink,
+    fontSize: 11,
+    fontWeight: '800',
+    marginTop: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
   },
   monthScroller: {
     gap: 8,
