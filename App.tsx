@@ -1,5 +1,5 @@
 import { StatusBar } from 'expo-status-bar';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Modal,
   Pressable,
@@ -8,23 +8,13 @@ import {
   Text,
   View,
 } from 'react-native';
-import MapView, { Marker, UrlTile } from 'react-native-maps';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
+import { WebView } from 'react-native-webview';
+import type { WebViewMessageEvent } from 'react-native-webview';
 
 import { BloomEvent, BloomMonth, bloomEvents, monthOrder } from './src/data/blooms';
 
 type Tab = 'map' | 'calendar' | 'saved';
-
-const osmTileUrl = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
-
-function regionForEvent(event: BloomEvent, latitudeDelta = 45, longitudeDelta = 70) {
-  return {
-    latitude: event.latitude,
-    longitude: event.longitude,
-    latitudeDelta,
-    longitudeDelta,
-  };
-}
 
 function monthMatches(event: BloomEvent, month: BloomMonth | 'All') {
   return month === 'All' || event.bestMonths.includes(month);
@@ -130,7 +120,7 @@ function MapTab({
           onSelectEvent={onSelectEvent}
           compact
         />
-        <Text style={styles.mapCaption}>{events.length} matching places · OpenStreetMap tiles</Text>
+        <Text style={styles.mapCaption}>{events.length} matching places · OpenStreetMap + Leaflet</Text>
       </View>
 
       <FullScreenMap
@@ -167,36 +157,295 @@ function BloomMap({
   onSelectEvent: (id: string) => void;
   compact?: boolean;
 }) {
-  return (
-    <MapView
-      style={compact ? styles.mapCanvas : styles.fullMap}
-      initialRegion={regionForEvent(selectedEvent)}
-      region={regionForEvent(selectedEvent)}
-      mapType="none"
-      rotateEnabled={!compact}
-      pitchEnabled={!compact}
-      showsCompass={!compact}
-      toolbarEnabled={false}
-    >
-      <UrlTile urlTemplate={osmTileUrl} maximumZ={19} flipY={false} />
-      {events.map((event) => {
-        const selected = event.id === selectedEvent.id;
-        return (
-          <Marker
-            key={event.id}
-            coordinate={{ latitude: event.latitude, longitude: event.longitude }}
-            title={event.commonName}
-            description={event.locationName}
-            onPress={() => onSelectEvent(event.id)}
-          >
-            <View style={[styles.mapMarker, selected ? styles.mapMarkerSelected : null]}>
-              <Text style={styles.mapMarkerText}>{event.imageEmoji}</Text>
-            </View>
-          </Marker>
-        );
-      })}
-    </MapView>
+  const webViewRef = useRef<WebView>(null);
+  const leafletHtml = useMemo(
+    () => buildLeafletHtml(events, selectedEvent.id),
+    [events, selectedEvent.id],
   );
+
+  useEffect(() => {
+    webViewRef.current?.injectJavaScript(
+      `window.setSelectedBloom && window.setSelectedBloom(${JSON.stringify(selectedEvent.id)}, false); true;`,
+    );
+  }, [selectedEvent.id]);
+
+  function handleMapMessage(message: WebViewMessageEvent) {
+    try {
+      const payload = JSON.parse(message.nativeEvent.data) as { type?: string; id?: string };
+      if (payload.type === 'select' && payload.id && events.some((event) => event.id === payload.id)) {
+        onSelectEvent(payload.id);
+      }
+    } catch {
+      // Ignore non-JSON messages from the web map runtime.
+    }
+  }
+
+  return (
+    <View style={[styles.mapSurface, compact ? styles.mapCanvas : styles.fullMap]}>
+      <WebView
+        ref={webViewRef}
+        androidLayerType="hardware"
+        domStorageEnabled
+        javaScriptEnabled
+        onMessage={handleMapMessage}
+        originWhitelist={['*']}
+        overScrollMode="never"
+        setSupportMultipleWindows={false}
+        source={{ html: leafletHtml }}
+        style={styles.webMap}
+      />
+    </View>
+  );
+}
+
+function buildLeafletHtml(events: BloomEvent[], selectedEventId: string) {
+  const mapEvents = events.map((event) => ({
+    id: event.id,
+    commonName: event.commonName,
+    locationName: event.locationName,
+    country: event.country,
+    seasonLabel: event.seasonLabel,
+    latitude: event.latitude,
+    longitude: event.longitude,
+    imageEmoji: event.imageEmoji,
+  }));
+
+  return `
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="initial-scale=1, maximum-scale=1, user-scalable=no, width=device-width" />
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
+    <style>
+      html, body, #map {
+        background: #DDF0FF;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        width: 100%;
+      }
+
+      body {
+        color: #2B2118;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      .leaflet-container {
+        background: #DDF0FF;
+        font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      .leaflet-bar,
+      .leaflet-control-layers,
+      .leaflet-control-scale-line {
+        border: 0 !important;
+        box-shadow: 0 8px 24px rgba(43, 33, 24, 0.18);
+      }
+
+      .leaflet-bar a {
+        color: #2B2118;
+      }
+
+      .bloom-marker {
+        align-items: center;
+        background: #FFFFFF;
+        border: 2px solid #E65E82;
+        border-radius: 999px;
+        box-shadow: 0 8px 18px rgba(43, 33, 24, 0.24);
+        display: flex;
+        font-size: 17px;
+        height: 34px;
+        justify-content: center;
+        line-height: 34px;
+        transition: background 140ms ease, border 140ms ease, box-shadow 140ms ease;
+        width: 34px;
+      }
+
+      .bloom-marker.selected {
+        background: #F9D9DF;
+        border-color: #2B2118;
+        box-shadow: 0 10px 24px rgba(43, 33, 24, 0.34);
+        z-index: 500 !important;
+      }
+
+      .bloom-popup {
+        min-width: 190px;
+      }
+
+      .bloom-popup-title {
+        color: #2B2118;
+        font-size: 14px;
+        font-weight: 800;
+        margin-bottom: 3px;
+      }
+
+      .bloom-popup-location {
+        color: #7E6F64;
+        font-size: 12px;
+        font-weight: 650;
+        margin-bottom: 8px;
+      }
+
+      .bloom-popup-season {
+        color: #E65E82;
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      .leaflet-popup-content {
+        margin: 12px 14px;
+      }
+
+      .leaflet-popup-content-wrapper {
+        border-radius: 14px;
+        box-shadow: 0 12px 32px rgba(43, 33, 24, 0.22);
+      }
+
+      .map-empty {
+        align-items: center;
+        background: #FFF8F3;
+        color: #7E6F64;
+        display: flex;
+        font-size: 14px;
+        font-weight: 700;
+        height: 100%;
+        justify-content: center;
+        text-align: center;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="map"></div>
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin=""
+    ></script>
+    <script>
+      const events = ${JSON.stringify(mapEvents)};
+      let selectedId = ${JSON.stringify(selectedEventId)};
+      const markers = {};
+
+      function escapeHtml(value) {
+        return String(value).replace(/[&<>"']/g, function(character) {
+          return {
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            '"': '&quot;',
+            "'": '&#039;',
+          }[character];
+        });
+      }
+
+      function postSelection(id) {
+        window.ReactNativeWebView && window.ReactNativeWebView.postMessage(JSON.stringify({
+          type: 'select',
+          id: id,
+        }));
+      }
+
+      function markerIcon(event, selected) {
+        return L.divIcon({
+          className: selected ? 'bloom-marker selected' : 'bloom-marker',
+          html: '<span>' + escapeHtml(event.imageEmoji) + '</span>',
+          iconSize: [34, 34],
+          iconAnchor: [17, 17],
+          popupAnchor: [0, -18],
+        });
+      }
+
+      function popupHtml(event) {
+        return [
+          '<div class="bloom-popup">',
+          '<div class="bloom-popup-title">' + escapeHtml(event.commonName) + '</div>',
+          '<div class="bloom-popup-location">' + escapeHtml(event.locationName) + ', ' + escapeHtml(event.country) + '</div>',
+          '<div class="bloom-popup-season">' + escapeHtml(event.seasonLabel) + '</div>',
+          '</div>',
+        ].join('');
+      }
+
+      function setSelectedBloom(id, notifyNative) {
+        if (!markers[id]) {
+          return;
+        }
+
+        selectedId = id;
+        Object.keys(markers).forEach(function(markerId) {
+          const marker = markers[markerId];
+          marker.setIcon(markerIcon(marker.bloomEvent, markerId === selectedId));
+        });
+
+        const selectedMarker = markers[id];
+        map.flyTo(selectedMarker.getLatLng(), Math.max(map.getZoom(), 4), {
+          animate: true,
+          duration: 0.55,
+        });
+        selectedMarker.openPopup();
+
+        if (notifyNative) {
+          postSelection(id);
+        }
+      }
+
+      window.setSelectedBloom = setSelectedBloom;
+
+      if (!events.length) {
+        document.body.innerHTML = '<div class="map-empty">No bloom places match this filter.</div>';
+      } else {
+        var map = L.map('map', {
+          attributionControl: true,
+          worldCopyJump: true,
+          zoomControl: true,
+        });
+
+        L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+          maxZoom: 19,
+          crossOrigin: true,
+        }).addTo(map);
+
+        L.control.scale({
+          imperial: false,
+          metric: true,
+        }).addTo(map);
+
+        const group = L.featureGroup().addTo(map);
+
+        events.forEach(function(event) {
+          const marker = L.marker([event.latitude, event.longitude], {
+            icon: markerIcon(event, event.id === selectedId),
+            keyboard: true,
+            title: event.commonName + ' - ' + event.locationName,
+          }).bindPopup(popupHtml(event));
+
+          marker.bloomEvent = event;
+          marker.on('click', function() {
+            setSelectedBloom(event.id, true);
+          });
+          marker.addTo(group);
+          markers[event.id] = marker;
+        });
+
+        map.fitBounds(group.getBounds().pad(0.22), {
+          animate: false,
+          maxZoom: events.length === 1 ? 7 : 4,
+          padding: [22, 22],
+        });
+
+        setTimeout(function() {
+          setSelectedBloom(selectedId, false);
+        }, 250);
+      }
+    </script>
+  </body>
+</html>`;
 }
 
 function FullScreenMap({
@@ -532,28 +781,17 @@ const styles = StyleSheet.create({
     lineHeight: 19,
   },
   mapCanvas: {
-    backgroundColor: colors.sky,
     borderRadius: 22,
     height: 230,
-    overflow: 'hidden',
     width: '100%',
   },
-  mapMarker: {
-    alignItems: 'center',
-    backgroundColor: colors.card,
-    borderColor: colors.petal,
-    borderRadius: 999,
-    borderWidth: 2,
-    height: 28,
-    justifyContent: 'center',
-    width: 28,
+  mapSurface: {
+    backgroundColor: colors.sky,
+    overflow: 'hidden',
   },
-  mapMarkerSelected: {
-    backgroundColor: colors.blush,
-    transform: [{ scale: 1.15 }],
-  },
-  mapMarkerText: {
-    fontSize: 14,
+  webMap: {
+    backgroundColor: colors.sky,
+    flex: 1,
   },
   detailCard: {
     backgroundColor: colors.card,
