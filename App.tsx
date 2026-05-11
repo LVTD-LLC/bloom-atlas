@@ -8,6 +8,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
@@ -17,6 +18,7 @@ import type { WebViewMessageEvent } from 'react-native-webview';
 import { BloomEvent, BloomMonth, bloomEvents, monthOrder } from './src/data/blooms';
 
 type Tab = 'map' | 'near' | 'calendar' | 'saved';
+type SortMode = 'season' | 'name' | 'country';
 
 type UserLocation = {
   latitude: number;
@@ -30,6 +32,47 @@ type NearbyBloom = BloomEvent & {
 
 function monthMatches(event: BloomEvent, month: BloomMonth | 'All') {
   return month === 'All' || event.bestMonths.includes(month);
+}
+
+function searchMatches(event: BloomEvent, query: string) {
+  const normalizedQuery = query.trim().toLowerCase();
+
+  if (!normalizedQuery) {
+    return true;
+  }
+
+  return [
+    event.plant,
+    event.commonName,
+    event.locationName,
+    event.region,
+    event.country,
+    event.seasonLabel,
+    event.description,
+  ]
+    .join(' ')
+    .toLowerCase()
+    .includes(normalizedQuery);
+}
+
+function sortBloomEvents(events: BloomEvent[], sortMode: SortMode, currentMonth: BloomMonth) {
+  const monthIndex = monthOrder.indexOf(currentMonth);
+  const monthsFromNow = (event: BloomEvent) => {
+    const offsets = event.bestMonths.map((month) => (monthOrder.indexOf(month) - monthIndex + 12) % 12);
+    return Math.min(...offsets);
+  };
+
+  return [...events].sort((left, right) => {
+    if (sortMode === 'name') {
+      return left.commonName.localeCompare(right.commonName) || left.locationName.localeCompare(right.locationName);
+    }
+
+    if (sortMode === 'country') {
+      return left.country.localeCompare(right.country) || left.commonName.localeCompare(right.commonName);
+    }
+
+    return monthsFromNow(left) - monthsFromNow(right) || left.commonName.localeCompare(right.commonName);
+  });
 }
 
 function getCurrentBloomMonth(date = new Date()): BloomMonth {
@@ -62,15 +105,39 @@ function formatDistance(distanceKm: number) {
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>('map');
   const [selectedMonth, setSelectedMonth] = useState<BloomMonth | 'All'>('All');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedCountry, setSelectedCountry] = useState('All');
+  const [sortMode, setSortMode] = useState<SortMode>('season');
   const [selectedEventId, setSelectedEventId] = useState(bloomEvents[0].id);
   const selectedEvent = bloomEvents.find((event) => event.id === selectedEventId) ?? bloomEvents[0];
+  const currentMonth = getCurrentBloomMonth();
 
-  const filteredEvents = useMemo(
-    () => bloomEvents.filter((event) => monthMatches(event, selectedMonth)),
-    [selectedMonth],
+  const countries = useMemo(
+    () => Array.from(new Set(bloomEvents.map((event) => event.country))).sort((left, right) => left.localeCompare(right)),
+    [],
   );
 
-  const countriesCount = new Set(bloomEvents.map((event) => event.country)).size;
+  const filteredEvents = useMemo(
+    () => sortBloomEvents(
+      bloomEvents.filter(
+        (event) =>
+          monthMatches(event, selectedMonth) &&
+          (selectedCountry === 'All' || event.country === selectedCountry) &&
+          searchMatches(event, searchQuery),
+      ),
+      sortMode,
+      currentMonth,
+    ),
+    [currentMonth, searchQuery, selectedCountry, selectedMonth, sortMode],
+  );
+
+  useEffect(() => {
+    if (filteredEvents.length && !filteredEvents.some((event) => event.id === selectedEventId)) {
+      setSelectedEventId(filteredEvents[0].id);
+    }
+  }, [filteredEvents, selectedEventId]);
+
+  const countriesCount = countries.length;
 
   return (
     <SafeAreaProvider>
@@ -101,11 +168,18 @@ export default function App() {
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
           {activeTab === 'map' ? (
             <MapTab
+              countries={countries}
               events={filteredEvents}
+              searchQuery={searchQuery}
+              selectedCountry={selectedCountry}
               selectedEvent={selectedEvent}
               selectedMonth={selectedMonth}
+              sortMode={sortMode}
+              onSelectCountry={setSelectedCountry}
               onSelectEvent={setSelectedEventId}
               onSelectMonth={setSelectedMonth}
+              onSelectSort={setSortMode}
+              onUpdateSearch={setSearchQuery}
             />
           ) : null}
 
@@ -138,23 +212,47 @@ export default function App() {
 }
 
 function MapTab({
+  countries,
   events,
+  searchQuery,
+  selectedCountry,
   selectedEvent,
   selectedMonth,
+  sortMode,
+  onSelectCountry,
   onSelectEvent,
   onSelectMonth,
+  onSelectSort,
+  onUpdateSearch,
 }: {
+  countries: string[];
   events: BloomEvent[];
+  searchQuery: string;
+  selectedCountry: string;
   selectedEvent: BloomEvent;
   selectedMonth: BloomMonth | 'All';
+  sortMode: SortMode;
+  onSelectCountry: (country: string) => void;
   onSelectEvent: (id: string) => void;
   onSelectMonth: (month: BloomMonth | 'All') => void;
+  onSelectSort: (sortMode: SortMode) => void;
+  onUpdateSearch: (query: string) => void;
 }) {
   const [mapExpanded, setMapExpanded] = useState(false);
 
   return (
     <View>
-      <MonthFilter selectedMonth={selectedMonth} onSelectMonth={onSelectMonth} />
+      <DiscoveryFilters
+        countries={countries}
+        searchQuery={searchQuery}
+        selectedCountry={selectedCountry}
+        selectedMonth={selectedMonth}
+        sortMode={sortMode}
+        onSelectCountry={onSelectCountry}
+        onSelectMonth={onSelectMonth}
+        onSelectSort={onSelectSort}
+        onUpdateSearch={onUpdateSearch}
+      />
 
       <View style={styles.mapCard}>
         <View style={styles.mapHeader}>
@@ -180,18 +278,96 @@ function MapTab({
         onSelectEvent={onSelectEvent}
       />
 
-      <BloomDetail event={selectedEvent} />
+      {events.length ? <BloomDetail event={selectedEvent} /> : null}
 
-      <Text style={styles.sectionTitle}>Explore blooms</Text>
-      {events.map((event) => (
-        <BloomRow
-          key={event.id}
-          event={event}
-          selected={event.id === selectedEvent.id}
-          onPress={() => onSelectEvent(event.id)}
-        />
-      ))}
+      <View style={styles.resultsHeader}>
+        <Text style={styles.sectionTitle}>Explore blooms</Text>
+        <Text style={styles.resultsCount}>{events.length} results</Text>
+      </View>
+      {events.length ? (
+        events.map((event) => (
+          <BloomRow
+            key={event.id}
+            event={event}
+            selected={event.id === selectedEvent.id}
+            onPress={() => onSelectEvent(event.id)}
+          />
+        ))
+      ) : (
+        <View style={styles.infoCard}>
+          <Text style={styles.sectionTitle}>No matching blooms</Text>
+          <Text style={styles.mutedText}>Try clearing the search, country, or month filters.</Text>
+        </View>
+      )}
     </View>
+  );
+}
+
+function DiscoveryFilters({
+  countries,
+  searchQuery,
+  selectedCountry,
+  selectedMonth,
+  sortMode,
+  onSelectCountry,
+  onSelectMonth,
+  onSelectSort,
+  onUpdateSearch,
+}: {
+  countries: string[];
+  searchQuery: string;
+  selectedCountry: string;
+  selectedMonth: BloomMonth | 'All';
+  sortMode: SortMode;
+  onSelectCountry: (country: string) => void;
+  onSelectMonth: (month: BloomMonth | 'All') => void;
+  onSelectSort: (sortMode: SortMode) => void;
+  onUpdateSearch: (query: string) => void;
+}) {
+  return (
+    <View style={styles.discoveryCard}>
+      <TextInput
+        autoCapitalize="none"
+        autoCorrect={false}
+        clearButtonMode="while-editing"
+        onChangeText={onUpdateSearch}
+        placeholder="Search flower, country, region…"
+        placeholderTextColor={colors.muted}
+        style={styles.searchInput}
+        value={searchQuery}
+      />
+
+      <Text style={styles.filterLabel}>Season</Text>
+      <MonthFilter selectedMonth={selectedMonth} onSelectMonth={onSelectMonth} />
+
+      <Text style={styles.filterLabel}>Country</Text>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterScroller}>
+        {(['All', ...countries] as string[]).map((country) => (
+          <Pressable
+            key={country}
+            onPress={() => onSelectCountry(country)}
+            style={[styles.filterPill, selectedCountry === country ? styles.filterPillActive : null]}
+          >
+            <Text style={[styles.filterPillText, selectedCountry === country ? styles.filterPillTextActive : null]}>{country}</Text>
+          </Pressable>
+        ))}
+      </ScrollView>
+
+      <Text style={styles.filterLabel}>Sort</Text>
+      <View style={styles.sortRow}>
+        <SortButton label="Soonest" active={sortMode === 'season'} onPress={() => onSelectSort('season')} />
+        <SortButton label="Flower" active={sortMode === 'name'} onPress={() => onSelectSort('name')} />
+        <SortButton label="Country" active={sortMode === 'country'} onPress={() => onSelectSort('country')} />
+      </View>
+    </View>
+  );
+}
+
+function SortButton({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
+  return (
+    <Pressable onPress={onPress} style={[styles.sortButton, active ? styles.sortButtonActive : null]}>
+      <Text style={[styles.sortButtonText, active ? styles.sortButtonTextActive : null]}>{label}</Text>
+    </Pressable>
   );
 }
 
@@ -935,6 +1111,82 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 4,
   },
+  discoveryCard: {
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: 24,
+    borderWidth: 1,
+    marginBottom: 14,
+    padding: 14,
+  },
+  searchInput: {
+    backgroundColor: colors.background,
+    borderColor: colors.border,
+    borderRadius: 16,
+    borderWidth: 1,
+    color: colors.ink,
+    fontSize: 15,
+    fontWeight: '600',
+    marginBottom: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+  },
+  filterLabel: {
+    color: colors.muted,
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+    marginBottom: 8,
+    textTransform: 'uppercase',
+  },
+  filterScroller: {
+    gap: 8,
+    paddingBottom: 14,
+  },
+  filterPill: {
+    backgroundColor: colors.background,
+    borderColor: colors.border,
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  filterPillActive: {
+    backgroundColor: colors.ink,
+    borderColor: colors.ink,
+  },
+  filterPillText: {
+    color: colors.muted,
+    fontWeight: '700',
+  },
+  filterPillTextActive: {
+    color: colors.card,
+  },
+  sortRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  sortButton: {
+    alignItems: 'center',
+    backgroundColor: colors.background,
+    borderColor: colors.border,
+    borderRadius: 999,
+    borderWidth: 1,
+    flex: 1,
+    paddingVertical: 9,
+  },
+  sortButtonActive: {
+    backgroundColor: colors.leaf,
+    borderColor: colors.leaf,
+  },
+  sortButtonText: {
+    color: colors.muted,
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  sortButtonTextActive: {
+    color: colors.card,
+  },
   monthScroller: {
     gap: 8,
     paddingBottom: 14,
@@ -1022,6 +1274,16 @@ const styles = StyleSheet.create({
   sectionTitle: {
     color: colors.ink,
     fontSize: 19,
+    fontWeight: '800',
+  },
+  resultsHeader: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  resultsCount: {
+    color: colors.muted,
+    fontSize: 12,
     fontWeight: '800',
   },
   mutedText: {
