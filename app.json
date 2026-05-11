@@ -14,11 +14,18 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.lvtd.bloomatlas"
+      "bundleIdentifier": "com.lvtd.bloomatlas",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "Bloom Atlas uses your location to show nearby bloom destinations that are in season right now."
+      }
     },
     "android": {
       "package": "com.lvtd.bloomatlas",
       "versionCode": 7,
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION"
+      ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#FFF8F3"
